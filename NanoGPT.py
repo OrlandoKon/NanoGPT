@@ -3,13 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # 超参数
-context_length = 8
 batch_size = 32
+context_length = 8
+max_iters = 5000
+eval_interval = 500
+eval_iters = 200
 learning_rate = 1e-3
 embed_dim = 32
-eval_interval = 300
-eval_iters = 200
-max_iters = 3000
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # --------------
 
@@ -61,16 +61,41 @@ def get_batch(split):
 def estimate_loss():
     out = {}
     model.eval()
-    for split in ['train', 'test']:
+    for split in ['train', 'val']:
         losses = torch.zeros(eval_iters) 
         for k in range(eval_iters):
             xb, yb = get_batch(split)
             _, loss = model(xb, yb)
-            losses[k] = loss.item
+            losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
     return out
 
+# 构建单头注意力机制
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+
+        self.query = nn.Linear(embed_dim, head_size, bias=False)
+        self.key = nn.Linear(embed_dim, head_size, bias=False)
+        self.value = nn.Linear(embed_dim, head_size, bias=False)
+        self.register_buffer('triu', torch.triu(torch.ones(context_length, context_length, dtype=torch.bool), diagonal=1))
+
+    def forward(self, x):
+        _, T, C = x.shape
+
+        q = self.query(x)
+        k = self.key(x)
+        v = self.value(x)
+
+        wei = q @ k.transpose(-2, -1) * C**-0.5
+        wei = wei.masked_fill(self.triu[:T, :T], float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+
+        out = wei @ v
+
+        return out
+         
 
 # 构建BigramLanguageModel
 class BigramLanguageModel(nn.Module):
@@ -79,18 +104,20 @@ class BigramLanguageModel(nn.Module):
 
         self.token_embedding_tale = nn.Embedding(vocab_size, embed_dim)             # (B, T, C)
         self.position_embedding_table = nn.Embedding(context_length, embed_dim)     # (B, T, C)
+        self.sa_head = Head(embed_dim)
         self.lm_head = nn.Linear(embed_dim, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
 
         token_emb = self.token_embedding_tale(idx)                  
-        position_emb = self.position_embedding_table(torch.arange(T, device=idx.device)) # (B, T, C)
+        position_emb = self.position_embedding_table(torch.arange(T, device=device)) # (B, T, C)
         x = token_emb + position_emb
+        x = self.sa_head(x)
         logits = self.lm_head(x)
 
         if targets == None:
-            return logits
+            loss = None
         else:
             B, T, C = logits.shape
             logits = logits.view(B*T, C)
@@ -98,11 +125,13 @@ class BigramLanguageModel(nn.Module):
 
             loss = F.cross_entropy(logits, targets)
 
-            return logits, loss
+        return logits, loss
 
     def generate(self, idx, max_new_tokens):
         for _ in range(max_new_tokens):
-            logits = self(idx)
+            idx_cond = idx[:, -context_length:]
+
+            logits, _ = self(idx_cond)
 
             logits = logits[:, -1, :]
             prob = torch.softmax(logits, dim=-1)
@@ -132,7 +161,6 @@ for iter in range(max_iters):
     loss.backward()
     # 更新参数
     optimizer.step()
-print(loss.item())
 
-context = torch.zeros((1, 1), dtype=torch.long)
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decoder(model.generate(context, max_new_tokens=500)[0].tolist()))
