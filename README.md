@@ -2,7 +2,9 @@
 
 一个从零开始学习 GPT 架构的实验项目。
 
-当前版本从字符级语言模型开始，实现了文本编码、训练集与验证集划分、批次采样、Bigram language model、交叉熵损失、AdamW 优化和文本生成。项目中的代码会逐步扩展到更完整的 GPT-2 结构，重点是理解每个组件的作用，而不是直接使用现成的模型实现。
+当前实现了一个字符级、decoder-only 的 GPT 风格语言模型：从文本编码、训练集与验证集划分、批次采样开始，逐步加入 token 与 position embedding、因果自注意力、多头注意力、前馈网络、LayerNorm、Dropout、残差连接、AdamW 训练和自回归文本生成。
+
+项目参考 Andrej Karpathy 的 nanoGPT，并以理解 Transformer 各个组件的实现和作用为目标，后续会继续向更完整的 GPT-2 结构扩展。
 
 ## Reference
 
