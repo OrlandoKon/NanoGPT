@@ -3,14 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # 超参数
-batch_size = 32
-context_length = 8
+batch_size = 64
+context_length = 256
 max_iters = 5000
 eval_interval = 500
 eval_iters = 200
-learning_rate = 1e-3
-embed_dim = 32
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+learning_rate = 3e-4
+n_embd = 384
+n_head = 6
+n_layer = 6
+drop_rate = 0.2
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # --------------
 
 torch.manual_seed(1337)
@@ -73,12 +76,13 @@ def estimate_loss():
 
 # 构建单头注意力机制
 class Head(nn.Module):
-    def __init__(self, head_size):
+    def __init__(self, head_size, drop_rate):
         super().__init__()
 
-        self.query = nn.Linear(embed_dim, head_size, bias=False)
-        self.key = nn.Linear(embed_dim, head_size, bias=False)
-        self.value = nn.Linear(embed_dim, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.drop = nn.Dropout(drop_rate)
         self.register_buffer('triu', torch.triu(torch.ones(context_length, context_length, dtype=torch.bool), diagonal=1))
 
     def forward(self, x):
@@ -91,21 +95,69 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5
         wei = wei.masked_fill(self.triu[:T, :T], float('-inf'))
         wei = F.softmax(wei, dim=-1)
+        wei = self.drop(wei)
 
         out = wei @ v
 
         return out
+
+# 多头自注意力机制
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_head, head_size, drop_rate):
+        super().__init__()
+        ## 多头自注意力机制
+        self.heads = nn.ModuleList([Head(head_size, drop_rate) for _ in range(n_head)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.drop = nn.Dropout(drop_rate)
+
+    def forward(self, x):
+        out = torch.cat([head(x) for head in self.heads], dim=-1) ## 以Token的C维度进行拼接
+        out = self.proj(out)
+        out = self.drop(out)
+
+        return out
+
+# 前馈神经网络：用于整理和提取当前Token从其他Token中获取到的信息
+class FeedForwardNet(nn.Module):
+    def __init__(self, n_embd, drop_rate):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd * 4),
+            nn.ReLU(),
+            nn.Linear(n_embd * 4, n_embd),
+            nn.Dropout(drop_rate)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+# Transformer Core Block: Communication and Computation
+class Block(nn.Module):
+    def __init__(self, n_embd, n_head, drop_rate):
+        super().__init__()
+        self.sa = MultiHeadAttention(n_head, n_embd // n_head, drop_rate)
+        self.ffn = FeedForwardNet(n_embd, drop_rate)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffn(self.ln2(x))
+
+        return x
          
 
 # 构建BigramLanguageModel
 class BigramLanguageModel(nn.Module):
-    def __init__(self):
+    def __init__(self, vocab_size, n_embd, context_length, n_head, n_layer, drop_rate):
         super().__init__()
 
-        self.token_embedding_tale = nn.Embedding(vocab_size, embed_dim)             # (B, T, C)
-        self.position_embedding_table = nn.Embedding(context_length, embed_dim)     # (B, T, C)
-        self.sa_head = Head(embed_dim)
-        self.lm_head = nn.Linear(embed_dim, vocab_size)
+        self.token_embedding_tale = nn.Embedding(vocab_size, n_embd)             # (B, T, C)
+        self.position_embedding_table = nn.Embedding(context_length, n_embd)     # (B, T, C)
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head, drop_rate) for _ in range(n_layer)])
+        self.ln = nn.LayerNorm(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -113,7 +165,8 @@ class BigramLanguageModel(nn.Module):
         token_emb = self.token_embedding_tale(idx)                  
         position_emb = self.position_embedding_table(torch.arange(T, device=device)) # (B, T, C)
         x = token_emb + position_emb
-        x = self.sa_head(x)
+        x = self.blocks(x)
+        x = self.ln(x)
         logits = self.lm_head(x)
 
         if targets == None:
@@ -140,7 +193,7 @@ class BigramLanguageModel(nn.Module):
 
         return idx
 
-model = BigramLanguageModel().to(device)
+model = BigramLanguageModel(vocab_size, n_embd, context_length, n_head, n_layer, drop_rate).to(device)
 
 # 设置优化器为AdamW
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)

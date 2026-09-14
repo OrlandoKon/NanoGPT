@@ -4,6 +4,10 @@
 
 当前版本从字符级语言模型开始，实现了文本编码、训练集与验证集划分、批次采样、Bigram language model、交叉熵损失、AdamW 优化和文本生成。项目中的代码会逐步扩展到更完整的 GPT-2 结构，重点是理解每个组件的作用，而不是直接使用现成的模型实现。
 
+## Reference
+
+This learning repository follows the ideas and implementation progression in Andrej Karpathy's [nanoGPT](https://github.com/karpathy/nanoGPT) repository. The code here is written and extended as a learning exercise, beginning with a character-level language model and gradually building a GPT-style Transformer.
+
 ## 项目结构
 
 ```text
